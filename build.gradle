@@ -9,7 +9,7 @@ version = '4.21-recovered'
 
 // Use the JDK that is running Gradle instead of requiring a separately
 // installed toolchain. The compile task's --release setting below controls
-// the emitted bytecode level, so modern JDK launchers can build the default
+// the emitted bytecode level, so a Java 21+ launcher can build the default
 // Minecraft 1.21.11 artifact without a local toolchain download repository.
 
 sourceSets {
@@ -50,9 +50,9 @@ configurations.configureEach {
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
     // The recovered source contains CFR-emitted private interface helpers.
-    // The default artifact targets Minecraft 1.21.11 but keeps Java 8 bytecode
-    // for broad loader compatibility; pass -PtargetRelease=<n> to override it.
-    options.release = (project.findProperty('targetRelease') ?: '8') as int
+    // The default artifact targets Minecraft 1.21.11, which uses Java 21;
+    // pass -PtargetRelease=<n> to override it for older compatibility tests.
+    options.release = (project.findProperty('targetRelease') ?: '21') as int
     options.compilerArgs += ['-Xmaxerrs', '10000', '-Xdiags:verbose']
 }
 
@@ -132,7 +132,7 @@ tasks.register('fatJar', com.github.jengelman.gradle.plugins.shadow.tasks.Shadow
         attributes(
                 'Implementation-Title': 'OpenVapeV4.21 consolidated Java artifact',
                 'Implementation-Version': project.version,
-                'Vape421-Target-Java': (project.findProperty('targetRelease') ?: '8').toString(),
+                'Vape421-Target-Java': (project.findProperty('targetRelease') ?: '21').toString(),
                 'Vape421-Target-Minecraft': (project.findProperty('targetMinecraftVersion') ?: '1.21.11').toString())
     }
 }
@@ -155,22 +155,21 @@ tasks.register('injectionJar', com.github.jengelman.gradle.plugins.shadow.tasks.
     dependsOn(tasks.named('classes'))
     from(sourceSets.main.output)
     configurations = [project.configurations.runtimeClasspath]
-    // The original sample bundled its bytecode-manipulation library relocated
-    // into its own obfuscated namespace and loaded it via native defineClass, so
-    // it never crossed a classloader boundary. Our recovery uses stock javassist
-    // and asm; under Forge's LaunchClassLoader those packages resolve through a
-    // classloader that cannot see the injected jar (and Forge ships an
-    // incompatible ASM 5.x), so relocate them under the client namespace to load
-    // like the client's own classes.
-    relocate 'javassist', 'gg.vape.shaded.javassist'
-    relocate 'org.objectweb.asm', 'gg.vape.shaded.org.objectweb.asm'
+    // Older Java 8/Forge payloads need bytecode libraries relocated away from
+    // Forge's LaunchClassLoader. Java 21 class files cannot be remapped by the
+    // Shadow version used here, and the 1.21.11 artifact does not need that
+    // legacy Forge ASM 5.x workaround, so only relocate for Java 8 builds.
+    if (((project.findProperty('targetRelease') ?: '21') as int) <= 8) {
+        relocate 'javassist', 'gg.vape.shaded.javassist'
+        relocate 'org.objectweb.asm', 'gg.vape.shaded.org.objectweb.asm'
+    }
     exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
     exclude 'module-info.class', 'META-INF/versions/**'
     manifest {
         attributes(
                 'Implementation-Title': 'Vape 4.21 recovered Java payload',
                 'Implementation-Version': project.version,
-                'Vape421-Target-Java': (project.findProperty('targetRelease') ?: '8').toString(),
+                'Vape421-Target-Java': (project.findProperty('targetRelease') ?: '21').toString(),
                 'Vape421-Target-Minecraft': (project.findProperty('targetMinecraftVersion') ?: '1.21.11').toString())
     }
 }
@@ -182,9 +181,11 @@ tasks.register('verifyInjectionPayload') {
     inputs.file(tasks.named('injectionJar', Jar).flatMap { it.archiveFile })
     doLast {
         def payload = tasks.named('injectionJar', Jar).get().archiveFile.get().asFile
-        def requiredPrefixes = [
-                'gg/vape/shaded/javassist/',
-                'gg/vape/shaded/org/objectweb/asm/',
+        int targetReleaseValue = (project.findProperty('targetRelease') ?: '21') as int
+        def bytecodeLibraryPrefixes = targetReleaseValue <= 8
+                ? ['gg/vape/shaded/javassist/', 'gg/vape/shaded/org/objectweb/asm/']
+                : ['javassist/', 'org/objectweb/asm/']
+        def requiredPrefixes = bytecodeLibraryPrefixes + [
                 'com/google/gson/',
                 'com/google/common/',
                 'io/netty/',
@@ -192,7 +193,6 @@ tasks.register('verifyInjectionPayload') {
                 'org/lwjgl/'
         ]
         def prefixCounts = requiredPrefixes.collectEntries { [(it): 0] }
-        int targetReleaseValue = (project.findProperty('targetRelease') ?: '8') as int
         int maxMajorVersion = targetReleaseValue + 44
         def tooNew = []
         int classCount = 0

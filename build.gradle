@@ -117,6 +117,38 @@ idea {
     }
 }
 
+
+// Build a copyable Java-only distribution artifact. This intentionally does not
+// pull in the native Windows injector/DLL outputs; those remain available via
+// the injection-specific tasks below.
+tasks.register('fatJar', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar) {
+    group = 'build'
+    description = 'Builds a consolidated Java-only JAR with project classes, resources, and runtime dependencies.'
+    archiveFileName = 'OpenVapeV421-all.jar'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    dependsOn(tasks.named('classes'))
+    from(sourceSets.main.output)
+    configurations = [project.configurations.runtimeClasspath]
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+    exclude 'module-info.class', 'META-INF/versions/**'
+    manifest {
+        attributes(
+                'Implementation-Title': 'OpenVapeV4.21 consolidated Java artifact',
+                'Implementation-Version': project.version,
+                'Vape421-Target-Java': (project.findProperty('targetRelease') ?: '17').toString())
+    }
+}
+
+// The default thin JAR is not a useful runtime artifact for this recovery
+// project. Keep assemble/build focused on the single consolidated Java JAR.
+tasks.named('jar') {
+    enabled = false
+}
+
+tasks.named('assemble') {
+    dependsOn(tasks.named('fatJar'))
+}
+
 tasks.register('injectionJar', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar) {
     group = 'injection'
     description = 'Builds the self-contained Java payload embedded in the native DLL.'
